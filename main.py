@@ -21,7 +21,7 @@ except Exception:
 # =====================================================
 
 st.set_page_config(
-    page_title="CastaMuebles IA V7 - Fotos optimizadas / Batch",
+    page_title="CastaMuebles IA V8 - Cabezal 16 / Ruedo 5",
     page_icon="🧵",
     layout="wide"
 )
@@ -31,9 +31,10 @@ ARCHIVO_BACKUP = Path("backup_castamuebles_pro.json")
 DOBLADILLO_LATERAL_CM = 4
 DOBLADILLO_TOTAL_M = 0.08
 SOLAPA_DEFAULT_CM = 10
-CABEZAL_DEFAULT_CM = 22
+CABEZAL_DEFAULT_CM = 16
 RUEDO_DEFAULT_CM = 5
 SEPARACION_TABLAS_CM = 10
+# Taller actual: cabezal/superior 16 cm + ruedo/inferior 5 cm = altura de corte +21 cm por defecto.
 
 APERTURAS = ["Central", "Derecha", "Izquierda", "Lateral"]
 TIPOS_TRABAJO = ["Vertical", "Apaisado"]
@@ -1574,6 +1575,7 @@ def normalizar_orden_detectada(raw, nombre_archivo):
         "ambiente": texto_seguro(raw.get("ambiente") or raw.get("cortina") or raw.get("habitacion"), "Cortina"),
         "ancho_riel": numero_seguro(raw.get("ancho_riel") or raw.get("ancho_cortina") or raw.get("ancho"), 0.0),
         "alto_terminado": numero_seguro(raw.get("alto_terminado") or raw.get("alto") or raw.get("altura"), 0.0),
+        "altura_corte_oficina": numero_seguro(raw.get("altura_corte") or raw.get("alto_corte") or raw.get("altura_de_corte"), 0.0),
         "metraje_corte": numero_seguro(raw.get("metraje_corte") or raw.get("corte_exacto") or raw.get("corte") or raw.get("metraje"), 0.0),
         "apertura": normalizar_apertura(raw.get("apertura")),
         "uso": normalizar_trabajo(raw.get("uso") or raw.get("tipo_trabajo") or raw.get("trabajo")),
@@ -1664,6 +1666,7 @@ def construir_prompt_ordenes_moro(cantidad=1):
       "ambiente": "nombre del ambiente o texto después de Cortina 1, Cortina 2, etc.",
       "ancho_riel": "valor de Ancho de Cortina / ancho de riel, solo número en metros",
       "alto_terminado": "valor de Alto terminado, solo número en metros",
+      "altura_corte": "valor de Altura de corte si aparece, solo número en metros; si no aparece, null",
       "metraje_corte": "valor de Corte exacto de paño x ancho / corte asignado, solo número en metros",
       "apertura": "Central, Derecha, Izquierda o Lateral según figure",
       "uso": "Apaisado o Vertical según figure",
@@ -1828,6 +1831,7 @@ def cargar_orden_como_cortina(orden):
     numero_orden = texto_seguro(orden.get("numero_orden"))
     archivo = texto_seguro(orden.get("archivo"))
     observaciones = texto_seguro(orden.get("observaciones"))
+    altura_corte_oficina = numero_seguro(orden.get("altura_corte_oficina"), 0.0)
 
     cortina = {
         "ambiente": ambiente,
@@ -1846,6 +1850,7 @@ def cargar_orden_como_cortina(orden):
         "numero_orden": numero_orden,
         "archivo_origen": archivo,
         "observaciones_ia": observaciones,
+        "altura_corte_oficina": altura_corte_oficina,
     }
 
     tela.setdefault("cortinas", []).append(cortina)
@@ -1873,6 +1878,7 @@ def dataframe_a_ordenes(editado):
         orden["ambiente"] = texto_seguro(orden.get("ambiente"), "Cortina")
         orden["ancho_riel"] = numero_seguro(orden.get("ancho_riel"), 0.0)
         orden["alto_terminado"] = numero_seguro(orden.get("alto_terminado"), 0.0)
+        orden["altura_corte_oficina"] = numero_seguro(orden.get("altura_corte_oficina"), 0.0)
         orden["metraje_corte"] = numero_seguro(orden.get("metraje_corte"), 0.0)
         orden["apertura"] = normalizar_apertura(orden.get("apertura"))
         orden["uso"] = normalizar_trabajo(orden.get("uso"))
@@ -2402,7 +2408,9 @@ else:
     <div class="important-box">
         REGLA DE ORO:<br>
         La solapa no depende de si el trabajo es apaisado o vertical.<br>
-        La solapa depende de si hay cruce entre paños.
+        La solapa depende de si hay cruce entre paños.<br><br>
+        ALTURA DE CORTE ACTUAL DEL TALLER:<br>
+        Cabezal/superior <b>16 cm</b> + ruedo/inferior <b>5 cm</b> = <b>21 cm</b> sobre el alto terminado.
     </div>
     """, unsafe_allow_html=True)
 
