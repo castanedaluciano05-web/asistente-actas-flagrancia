@@ -93,6 +93,41 @@ st.markdown("""
     font-weight: 600;
     margin-bottom: 15px;
 }
+
+.cortina-header-card {
+    background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+    border: 2px solid #fb923c;
+    border-radius: 18px;
+    padding: 16px 18px;
+    margin: 10px 0 8px 0;
+    box-shadow: 0 6px 18px rgba(194, 65, 12, 0.12);
+}
+.cortina-header-title {
+    font-size: 25px;
+    font-weight: 950;
+    color: #7c2d12;
+    line-height: 1.2;
+}
+.cortina-header-subtitle {
+    font-size: 15px;
+    font-weight: 800;
+    color: #9a3412;
+    margin-top: 4px;
+}
+div.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #f97316 0%, #dc2626 100%);
+    color: white;
+    border: 2px solid #9a3412;
+    border-radius: 16px;
+    min-height: 58px;
+    font-size: 18px;
+    font-weight: 950;
+    box-shadow: 0 8px 18px rgba(220, 38, 38, 0.22);
+}
+div.stButton > button[kind="primary"]:hover {
+    border: 2px solid #7f1d1d;
+    filter: brightness(0.98);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2040,8 +2075,38 @@ else:
             for j, cortina in enumerate(tela["cortinas"]):
                 normalizar_cortina(cortina)
 
+                nombre_cortina_header = cortina.get("ambiente", "Cortina") or "Cortina"
+                ancho_header = float(cortina.get("ancho_riel", 0.0))
+                alto_header = float(cortina.get("alto_terminado", 0.0))
+
+                cab1, cab2 = st.columns([3, 1.45])
+                with cab1:
+                    st.markdown(
+                        f"""
+                        <div class="cortina-header-card">
+                            <div class="cortina-header-title">🪟 {nombre_cortina_header}</div>
+                            <div class="cortina-header-subtitle">
+                                Ancho: {ancho_header:.2f} m | Alto: {alto_header:.2f} m | Esta es la cortina seleccionada
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                with cab2:
+                    st.write("")
+                    if st.button(
+                        f"🧵 FABRICAR {nombre_cortina_header.upper()}",
+                        key=f"fabricar_taller_top_{i}_{j}",
+                        type="primary",
+                        use_container_width=True
+                    ):
+                        st.session_state.tela_seleccionada = i
+                        st.session_state.cortina_seleccionada = j
+                        st.session_state.vista = "COSTURA_TALLER"
+                        st.rerun()
+
                 with st.expander(
-                    f"🪟 {cortina.get('ambiente', 'Cortina')}",
+                    f"✏️ Editar medidas de {nombre_cortina_header}",
                     expanded=True
                 ):
                     a1, a2, a3, a4 = st.columns(4)
@@ -2161,15 +2226,7 @@ else:
                         cortina["hay_cruce"] = False
 
                     st.markdown("---")
-
-                    if st.button(
-                        "🧵 Fabricar esta cortina / Ir a COSTURA - TALLER",
-                        key=f"fabricar_taller_{i}_{j}"
-                    ):
-                        st.session_state.tela_seleccionada = i
-                        st.session_state.cortina_seleccionada = j
-                        st.session_state.vista = "COSTURA_TALLER"
-                        st.rerun()
+                    st.caption("El botón para enviar a taller está arriba, pegado al nombre de esta cortina, para evitar confusiones.")
 
                     control_rapido_cortina(cortina, tela)
 
