@@ -1277,7 +1277,7 @@ def mostrar_bloque_taller():
 # BLOQUE 0 - ESCÁNER IA MASIVO DE ÓRDENES MORO
 # =====================================================
 
-MODELO_GEMINI = "gemini-2.0-flash"
+MODELO_GEMINI = "gemini-2.5-flash"
 
 
 def obtener_api_key_gemini():
