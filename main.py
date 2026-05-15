@@ -1451,7 +1451,8 @@ def normalizar_orden_detectada(raw, nombre_archivo):
         "lote": texto_seguro(raw.get("lote") or raw.get("numero_lote") or raw.get("nro_lote")),
         "nombre_tela": texto_seguro(raw.get("nombre_tela") or raw.get("tela") or raw.get("tipo_tela")),
         "color_tela": texto_seguro(raw.get("color_tela") or raw.get("color")),
-        "metros_recibidos": numero_seguro(raw.get("metros_recibidos") or raw.get("metros_tela"), 0.0),
+        "metros_recibidos": numero_seguro(raw.get("metros_recibidos") or raw.get("metros_tela") or raw.get("metros_totales_lote") or raw.get("metros_enviados"), 0.0),
+        "origen_metros": "Oficina" if numero_seguro(raw.get("metros_recibidos") or raw.get("metros_tela") or raw.get("metros_totales_lote") or raw.get("metros_enviados"), 0.0) > 0 else "",
         "ambiente": texto_seguro(raw.get("ambiente") or raw.get("cortina") or raw.get("habitacion"), "Cortina"),
         "ancho_riel": numero_seguro(raw.get("ancho_riel") or raw.get("ancho_cortina") or raw.get("ancho"), 0.0),
         "alto_terminado": numero_seguro(raw.get("alto_terminado") or raw.get("alto") or raw.get("altura"), 0.0),
@@ -1488,7 +1489,7 @@ def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
       "lote": "número o nombre de lote si aparece; si no aparece, null",
       "nombre_tela": "nombre/tipo de tela si aparece; si no aparece, null",
       "color_tela": "color de tela si aparece; si no aparece, null",
-      "metros_recibidos": "metros totales recibidos del lote si aparece; si no aparece, null",
+      "metros_recibidos": "metros totales de tela enviados/recibidos para ese lote si aparece; si no aparece, null",
       "ambiente": "nombre del ambiente o texto después de Cortina 1, Cortina 2, etc.",
       "ancho_riel": "valor de Ancho de Cortina / ancho de riel, solo número en metros",
       "alto_terminado": "valor de Alto terminado, solo número en metros",
@@ -1503,6 +1504,10 @@ def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
     - No inventes lote, tela ni color.
     - No conviertas centímetros si el dato principal está en metros; devolvé metros como número.
     - Si aparecen comas decimales, podés devolver número con punto decimal.
+    - No confundas metraje_corte con metros_recibidos:
+      * metraje_corte = corte asignado a una cortina/paño/trabajo puntual.
+      * metros_recibidos = total de metros que administración envía para todo el lote/tela.
+    - Si la orden no muestra metros totales del lote, dejá metros_recibidos en null; el sistema lo calculará por suma de cortes al agrupar.
     """
 
     try:
@@ -1535,8 +1540,14 @@ def encontrar_o_crear_lote(orden):
         mismo_lote = lote_txt and norm(lote_txt) in norm(tela.get("nombre"))
 
         if (mismo_nombre and mismo_color) or mismo_lote:
-            if float(tela.get("metros_recibidos", 0.0)) <= 0 and metros > 0:
-                tela["metros_recibidos"] = metros
+            if metros > 0:
+                metros_actuales = float(tela.get("metros_recibidos", 0.0))
+                # La bandeja IA trabaja con el metraje de oficina como fuente principal.
+                # Si el lote ya existía pero estaba en cero, o si venimos de una confirmación
+                # de bandeja, actualizamos el metraje del lote para evitar cortes con fruncido falso.
+                if metros_actuales <= 0 or bool(orden.get("_actualizar_metros_lote")):
+                    tela["metros_recibidos"] = metros
+                    tela["origen_metros"] = texto_seguro(orden.get("origen_metros"), "Oficina / IA")
             if not tela.get("color") and color_lote:
                 tela["color"] = color_lote
             tela.setdefault("cortinas", [])
@@ -1546,6 +1557,7 @@ def encontrar_o_crear_lote(orden):
         "nombre": nombre_lote if not lote_txt else f"{nombre_lote} - Lote {lote_txt}",
         "color": color_lote,
         "metros_recibidos": metros,
+        "origen_metros": texto_seguro(orden.get("origen_metros"), "Oficina / IA") if metros > 0 else "",
         "fruncido_deseado": 2.2,
         "solapa_cm": SOLAPA_DEFAULT_CM,
         "cortinas": []
@@ -1617,6 +1629,7 @@ def dataframe_a_ordenes(editado):
         orden["nombre_tela"] = texto_seguro(orden.get("nombre_tela"))
         orden["color_tela"] = texto_seguro(orden.get("color_tela"))
         orden["metros_recibidos"] = numero_seguro(orden.get("metros_recibidos"), 0.0)
+        orden["origen_metros"] = texto_seguro(orden.get("origen_metros"))
         orden["ambiente"] = texto_seguro(orden.get("ambiente"), "Cortina")
         orden["ancho_riel"] = numero_seguro(orden.get("ancho_riel"), 0.0)
         orden["alto_terminado"] = numero_seguro(orden.get("alto_terminado"), 0.0)
@@ -1634,36 +1647,112 @@ def dataframe_a_ordenes(editado):
     return ordenes
 
 
+def preparar_metros_automaticos_por_lote(ordenes, solo_tildadas=False):
+    """
+    Completa metros_recibidos por lote.
+
+    Prioridad:
+    1) Si administración/IA leyó metros_recibidos del lote, usa ese total.
+    2) Si no hay total de lote, calcula metros_recibidos como suma de metraje_corte
+       de las cortinas del mismo lote/tela/color.
+
+    Esto evita pedir el metraje manualmente antes de ver los lotes.
+    """
+    grupos = {}
+
+    for orden in ordenes:
+        if solo_tildadas and not bool(orden.get("cargar")):
+            continue
+        clave = clave_lote_desde_orden(orden)
+        if not clave:
+            continue
+        grupos.setdefault(clave, []).append(orden)
+
+    resumen = []
+
+    for clave, filas in grupos.items():
+        suma_cortes = round(sum(numero_seguro(o.get("metraje_corte"), 0.0) for o in filas), 2)
+        valores_oficina = sorted({
+            round(numero_seguro(o.get("metros_recibidos"), 0.0), 2)
+            for o in filas
+            if numero_seguro(o.get("metros_recibidos"), 0.0) > 0
+            and not texto_seguro(o.get("origen_metros")).lower().startswith("calculado")
+        })
+
+        if valores_oficina:
+            # Si se repite el mismo total en varias órdenes del lote, no se suma varias veces.
+            # Si hay valores diferentes, usamos el mayor y lo avisamos en el resumen.
+            metros_lote = max(valores_oficina)
+            origen = "Oficina"
+            aviso = "" if len(valores_oficina) == 1 else f"Valores distintos detectados: {valores_oficina}. Se usó el mayor."
+        else:
+            metros_lote = suma_cortes
+            origen = "Calculado por suma de cortes"
+            aviso = "No se detectó total de lote; se sumaron los cortes de las órdenes del mismo lote."
+
+        for orden in filas:
+            if numero_seguro(orden.get("metros_recibidos"), 0.0) <= 0 or solo_tildadas:
+                orden["metros_recibidos"] = metros_lote
+                orden["origen_metros"] = origen
+            orden["_actualizar_metros_lote"] = solo_tildadas
+
+        resumen.append({
+            "lote_tela_color": clave,
+            "cortinas": len(filas),
+            "suma_cortes": suma_cortes,
+            "metros_lote": metros_lote,
+            "origen": origen,
+            "aviso": aviso,
+        })
+
+    return ordenes, resumen
+
+
 def mostrar_resumen_bandeja():
     ordenes = st.session_state.get("ordenes_detectadas", [])
     if not ordenes:
         return
 
-    grupos = {}
-    pendientes = 0
-    for orden in ordenes:
-        clave = clave_lote_desde_orden(orden)
-        if not clave:
-            pendientes += 1
-            clave = "⚠️ SIN LOTE / REVISAR"
-        grupos.setdefault(clave, 0)
-        grupos[clave] += 1
+    ordenes, resumen = preparar_metros_automaticos_por_lote(ordenes, solo_tildadas=False)
+    st.session_state.ordenes_detectadas = ordenes
+
+    pendientes = sum(1 for orden in ordenes if not clave_lote_desde_orden(orden))
 
     st.markdown("#### 📦 Agrupación detectada por lote/tela")
-    for clave, cantidad in grupos.items():
-        st.write(f"- **{clave}**: {cantidad} cortina/s")
+
+    if resumen:
+        df_resumen = pd.DataFrame(resumen)
+        st.dataframe(
+            df_resumen[["lote_tela_color", "cortinas", "suma_cortes", "metros_lote", "origen", "aviso"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "lote_tela_color": "Lote / Tela / Color",
+                "cortinas": "Cortinas",
+                "suma_cortes": st.column_config.NumberColumn("Suma cortes", format="%.2f m"),
+                "metros_lote": st.column_config.NumberColumn("Metros que se cargarán al lote", format="%.2f m"),
+                "origen": "Origen metros",
+                "aviso": "Aviso",
+            }
+        )
 
     if pendientes:
         st.warning(
             f"Hay {pendientes} orden/es sin lote claro. No conviene enviarlas a corte hasta corregirlas."
         )
 
+    st.info(
+        "Los metros recibidos del lote se completan automáticamente: si la oficina los informa, se toma ese total; "
+        "si no aparecen, el sistema los calcula sumando los metrajes/cortes de las órdenes del mismo lote."
+    )
+
 
 def mostrar_scanner_ia_masivo():
     st.markdown("## 📥 Bandeja IA de órdenes de administración")
     st.markdown(
         "Subí una o varias fotos de órdenes MORO. Primero se leen y se revisan; "
-        "recién después se cargan en el lote correcto."
+        "recién después se cargan en el lote correcto. No hace falta crear el lote ni cargar metros antes: "
+        "si la oficina informa el metraje del lote, se toma de la orden; si no aparece, se calcula por suma de cortes."
     )
 
     with st.expander("📸 Escanear órdenes MORO con IA", expanded=True):
@@ -1708,6 +1797,10 @@ def mostrar_scanner_ia_masivo():
                 st.success(f"Se leyeron {len(nuevas)} orden/es. Revisá la tabla antes de cargar.")
 
         if st.session_state.ordenes_detectadas:
+            st.session_state.ordenes_detectadas, _ = preparar_metros_automaticos_por_lote(
+                st.session_state.ordenes_detectadas,
+                solo_tildadas=False
+            )
             st.markdown("### ✅ Revisión antes de cargar")
             st.info(
                 "Revisá especialmente LOTE / TELA / COLOR. Si el lote está mal, el fruncido y el sobrante quedan mal. "
@@ -1717,7 +1810,7 @@ def mostrar_scanner_ia_masivo():
             df = pd.DataFrame(st.session_state.ordenes_detectadas)
             columnas = [
                 "cargar", "estado", "archivo", "numero_orden", "cliente", "telefono",
-                "lote", "nombre_tela", "color_tela", "metros_recibidos", "ambiente",
+                "lote", "nombre_tela", "color_tela", "metros_recibidos", "origen_metros", "ambiente",
                 "ancho_riel", "alto_terminado", "metraje_corte", "apertura", "uso",
                 "observaciones", "motivo_revision"
             ]
@@ -1741,6 +1834,7 @@ def mostrar_scanner_ia_masivo():
                     "alto_terminado": st.column_config.NumberColumn("Alto terminado", step=0.01, format="%.2f"),
                     "metraje_corte": st.column_config.NumberColumn("Metraje/corte", step=0.01, format="%.2f"),
                     "metros_recibidos": st.column_config.NumberColumn("Metros lote", step=0.10, format="%.2f"),
+                    "origen_metros": st.column_config.TextColumn("Origen metros", disabled=True),
                 },
                 key="editor_bandeja_ia"
             )
@@ -1757,6 +1851,7 @@ def mostrar_scanner_ia_masivo():
             )
 
             if st.button("✅ Confirmar y cargar órdenes tildadas en sus lotes", type="primary"):
+                ordenes_editadas, resumen_confirmacion = preparar_metros_automaticos_por_lote(ordenes_editadas, solo_tildadas=True)
                 cargadas = 0
                 omitidas = []
 
@@ -1873,7 +1968,7 @@ else:
 
 
     if not st.session_state.data["telas"]:
-        st.info("Agregá una tela/lote para empezar.")
+        st.info("Agregá una tela/lote para carga manual, o usá la Bandeja IA: ahí el lote y los metros se completan desde las órdenes de administración.")
     else:
         for i, tela in enumerate(st.session_state.data["telas"]):
             st.markdown(f"## 📦 Tela / Lote {i + 1}")
@@ -1896,7 +1991,7 @@ else:
 
             with c3:
                 tela["metros_recibidos"] = st.number_input(
-                    "Metros recibidos",
+                    "Metros recibidos del lote (auto desde oficina o manual)",
                     value=float(tela.get("metros_recibidos", 0.0)),
                     step=0.10,
                     key=f"metros_tela_{i}"
