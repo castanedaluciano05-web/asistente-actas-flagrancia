@@ -6,9 +6,10 @@ import re
 from pathlib import Path
 from datetime import date
 from textwrap import dedent
+from io import BytesIO
 
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageOps
 
 try:
     import google.generativeai as genai
@@ -20,7 +21,7 @@ except Exception:
 # =====================================================
 
 st.set_page_config(
-    page_title="CastaMuebles IA V6 - Gestión Textil Pro",
+    page_title="CastaMuebles IA V7 - Fotos optimizadas / Batch",
     page_icon="🧵",
     layout="wide"
 )
@@ -1316,6 +1317,9 @@ def mostrar_bloque_taller():
 # =====================================================
 
 MODELO_GEMINI = "gemini-2.5-flash"
+MAX_LADO_IMAGEN_IA = 1600
+CALIDAD_JPEG_IA = 72
+TAMANIO_LOTE_IA_DEFAULT = 5
 
 
 def obtener_api_key_gemini():
@@ -1355,7 +1359,11 @@ def configurar_gemini():
 
 
 def extraer_json_desde_texto(texto):
-    """Extrae JSON aunque Gemini lo devuelva entre ```json ... ``` o con texto alrededor."""
+    """Extrae JSON aunque Gemini lo devuelva entre ```json ... ``` o con texto alrededor.
+
+    Puede devolver un diccionario o una lista. En V7 se usa especialmente para
+    leer tandas de varias fotos en una sola respuesta JSON array.
+    """
     if texto is None:
         return {}
 
@@ -1367,10 +1375,19 @@ def extraer_json_desde_texto(texto):
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", limpio, flags=re.DOTALL)
-    if match:
+    # Primero intentar array completo: [ {...}, {...} ]
+    match_array = re.search(r"\[.*\]", limpio, flags=re.DOTALL)
+    if match_array:
         try:
-            return json.loads(match.group(0))
+            return json.loads(match_array.group(0))
+        except Exception:
+            pass
+
+    # Después intentar objeto simple: { ... }
+    match_obj = re.search(r"\{.*\}", limpio, flags=re.DOTALL)
+    if match_obj:
+        try:
+            return json.loads(match_obj.group(0))
         except Exception:
             return {}
 
@@ -1570,20 +1587,73 @@ def normalizar_orden_detectada(raw, nombre_archivo):
     return orden
 
 
-def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
-    """Envía una orden MORO a Gemini y devuelve una fila normalizada para la bandeja."""
-    if not configurar_gemini():
-        return None
 
-    model = genai.GenerativeModel(MODELO_GEMINI)
-    prompt = """
-    Analizá esta imagen de una orden/hoja de producción de cortinas de la empresa MORO.
+def optimizar_imagen_para_ia(archivo, max_lado=MAX_LADO_IMAGEN_IA, calidad=CALIDAD_JPEG_IA):
+    """Achica y comprime una foto antes de enviarla a Gemini.
+
+    Objetivo práctico:
+    - Que las fotos del celular carguen mejor.
+    - Que cada consulta pese menos.
+    - Evitar mandar imágenes enormes de WhatsApp/cámara cuando solo necesitamos leer texto.
+
+    Devuelve: (imagen_pil_optimizada, info)
+    """
+    nombre = getattr(archivo, "name", "orden")
+    try:
+        archivo.seek(0)
+    except Exception:
+        pass
+
+    imagen = Image.open(archivo)
+    imagen = ImageOps.exif_transpose(imagen).convert("RGB")
+
+    ancho_original, alto_original = imagen.size
+    bytes_originales = None
+    try:
+        bytes_originales = len(archivo.getvalue())
+    except Exception:
+        pass
+
+    # thumbnail conserva proporción y evita agrandar imágenes chicas.
+    imagen.thumbnail((max_lado, max_lado), Image.Resampling.LANCZOS)
+
+    buffer = BytesIO()
+    imagen.save(buffer, format="JPEG", quality=int(calidad), optimize=True)
+    bytes_optimizados = buffer.tell()
+    buffer.seek(0)
+
+    imagen_optimizada = Image.open(buffer).convert("RGB")
+    # Cargamos la imagen en memoria para que no dependa del buffer después.
+    imagen_optimizada.load()
+
+    info = {
+        "archivo": nombre,
+        "ancho_original": ancho_original,
+        "alto_original": alto_original,
+        "ancho_optimizado": imagen_optimizada.size[0],
+        "alto_optimizado": imagen_optimizada.size[1],
+        "kb_original": round(bytes_originales / 1024, 1) if bytes_originales else None,
+        "kb_optimizado": round(bytes_optimizados / 1024, 1),
+    }
+    return imagen_optimizada, info
+
+
+def construir_prompt_ordenes_moro(cantidad=1):
+    modo = "una imagen" if cantidad == 1 else f"{cantidad} imágenes"
+    return f"""
+    Analizá {modo} de órdenes/hojas de producción de cortinas de la empresa MORO.
 
     Tu tarea es extraer datos para un sistema de corte y armado de cortinas.
     Respondé SOLO un JSON puro, sin markdown, sin explicación y sin texto adicional.
 
-    Usá estas claves exactas:
-    {
+    IMPORTANTE PARA TANDAS:
+    - Devolvé SIEMPRE un ARRAY JSON.
+    - El array debe tener exactamente {cantidad} objeto/s, uno por cada imagen recibida.
+    - Respetá el mismo orden de las imágenes: imagen 1 = primer objeto, imagen 2 = segundo objeto, etc.
+    - Si una imagen no se puede leer, devolvé el objeto igual con los campos dudosos en null y una observación.
+
+    Usá estas claves exactas en cada objeto:
+    {{
       "numero_orden": "número de orden si aparece; si no aparece, null",
       "cliente": "cliente si aparece; si no aparece, null",
       "telefono": "teléfono si aparece; si no aparece, null",
@@ -1598,7 +1668,7 @@ def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
       "apertura": "Central, Derecha, Izquierda o Lateral según figure",
       "uso": "Apaisado o Vertical según figure",
       "observaciones": "aclaraciones útiles visibles; si no hay, null"
-    }
+    }}
 
     Reglas:
     - Si un dato no se ve con claridad, poné null.
@@ -1613,13 +1683,62 @@ def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
     - Si solo ves "corte exacto", "corte de paño", "metraje corte" o un número junto a la cortina, eso va en metraje_corte y NO en metros_recibidos.
     """
 
+
+def analizar_ordenes_lote_con_ia(imagenes_info):
+    """Envía varias fotos optimizadas en UNA sola llamada a Gemini.
+
+    imagenes_info: lista de tuplas (imagen_pil, nombre_archivo)
+    Devuelve una lista de órdenes normalizadas, una por imagen.
+    """
+    if not configurar_gemini():
+        return []
+
+    if not imagenes_info:
+        return []
+
+    model = genai.GenerativeModel(MODELO_GEMINI)
+    prompt = construir_prompt_ordenes_moro(len(imagenes_info))
+
+    contenido = [prompt]
+    for idx, (imagen_pil, nombre_archivo) in enumerate(imagenes_info, start=1):
+        contenido.append(f"IMAGEN {idx} - archivo: {nombre_archivo}")
+        contenido.append(imagen_pil)
+
     try:
-        response = model.generate_content([prompt, imagen_pil])
+        response = model.generate_content(contenido)
         raw = extraer_json_desde_texto(getattr(response, "text", ""))
-        return normalizar_orden_detectada(raw, nombre_archivo)
+
+        if isinstance(raw, dict):
+            # Por si Gemini devuelve un wrapper tipo {"ordenes": [...]}.
+            for clave in ["ordenes", "items", "trabajos", "cortinas", "bandeja"]:
+                if isinstance(raw.get(clave), list):
+                    raw = raw.get(clave)
+                    break
+            else:
+                raw = [raw]
+
+        if not isinstance(raw, list):
+            raw = []
+
+        ordenes = []
+        for idx, (imagen_pil, nombre_archivo) in enumerate(imagenes_info):
+            item = raw[idx] if idx < len(raw) and isinstance(raw[idx], dict) else {}
+            ordenes.append(normalizar_orden_detectada(item, nombre_archivo))
+
+        return ordenes
+
     except Exception as e:
-        st.error(f"Error al leer {nombre_archivo}: {e}")
-        return normalizar_orden_detectada({"observaciones": f"Error IA: {e}"}, nombre_archivo)
+        # No reintentamos una por una automáticamente, para no gastar cupo de más.
+        st.error(f"Error al leer tanda de {len(imagenes_info)} foto/s: {e}")
+        return [
+            normalizar_orden_detectada({"observaciones": f"Error IA en tanda: {e}"}, nombre_archivo)
+            for _, nombre_archivo in imagenes_info
+        ]
+
+def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
+    """Compatibilidad: lee una sola orden usando la misma lógica V7 de tandas."""
+    ordenes = analizar_ordenes_lote_con_ia([(imagen_pil, nombre_archivo)])
+    return ordenes[0] if ordenes else None
 
 
 def encontrar_o_crear_lote(orden):
@@ -2086,7 +2205,7 @@ def mostrar_resumen_bandeja():
 def mostrar_scanner_ia_masivo():
     st.markdown("## 📥 Bandeja de órdenes de administración")
     st.markdown(
-        "Importá un JSON desde ChatGPT o subí fotos de órdenes MORO. Primero se leen y se revisan; "
+        "Importá un JSON desde ChatGPT o subí fotos de órdenes MORO. En V7 las fotos se achican/comprimen y se pueden leer en tandas de varias imágenes por consulta. Primero se leen y se revisan; "
         "recién después se cargan en el lote correcto. No hace falta crear el lote ni cargar metros antes: "
         "si la oficina informa el metraje del lote, se toma de la orden; si no aparece, se calcula por suma de cortes."
     )
@@ -2113,27 +2232,64 @@ def mostrar_scanner_ia_masivo():
         with c3:
             st.caption("No se carga nada al taller hasta confirmar.")
 
+        if fotos:
+            st.caption(
+                f"V7 optimiza las fotos antes de enviarlas: máximo {MAX_LADO_IMAGEN_IA}px, "
+                f"calidad JPG {CALIDAD_JPEG_IA}. También lee varias fotos por consulta para gastar menos llamadas."
+            )
+
+            tam_lote = st.selectbox(
+                "Fotos por consulta a Gemini",
+                [1, 2, 3, 4, 5],
+                index=4,
+                help="Con 5 fotos por consulta, 10 fotos usan aproximadamente 2 llamadas en vez de 10. Si una tanda falla, bajá a 2 o 3."
+            )
+            llamadas_estimadas = (len(fotos) + int(tam_lote) - 1) // int(tam_lote)
+            st.info(
+                f"Fotos cargadas: {len(fotos)} | Tanda: {tam_lote} foto/s | "
+                f"Llamadas estimadas a Gemini: {llamadas_estimadas}."
+            )
+
         if procesar:
             if not fotos:
                 st.warning("Primero subí una o varias fotos de órdenes.")
             else:
                 nuevas = []
+                imagenes_optimizadas = []
+                detalles_optimizacion = []
                 barra = st.progress(0)
                 total = len(fotos)
+
                 for idx, foto in enumerate(fotos, start=1):
-                    with st.spinner(f"Leyendo orden {idx} de {total}: {foto.name}"):
-                        try:
-                            img = Image.open(foto).convert("RGB")
-                            orden = analizar_orden_con_ia(img, foto.name)
-                            if orden:
-                                nuevas.append(orden)
-                        except Exception as e:
-                            st.error(f"No se pudo abrir {foto.name}: {e}")
-                            nuevas.append(normalizar_orden_detectada({"observaciones": f"Error imagen: {e}"}, foto.name))
-                    barra.progress(idx / total)
+                    try:
+                        img_opt, info_opt = optimizar_imagen_para_ia(foto)
+                        imagenes_optimizadas.append((img_opt, foto.name))
+                        detalles_optimizacion.append(info_opt)
+                    except Exception as e:
+                        st.error(f"No se pudo optimizar/abrir {foto.name}: {e}")
+                        nuevas.append(normalizar_orden_detectada({"observaciones": f"Error imagen: {e}"}, foto.name))
+                    barra.progress(idx / max(total, 1))
+
+                if detalles_optimizacion:
+                    with st.expander("📉 Ver optimización de fotos", expanded=False):
+                        st.dataframe(pd.DataFrame(detalles_optimizacion), use_container_width=True)
+
+                tam_lote_seguro = int(locals().get("tam_lote", TAMANIO_LOTE_IA_DEFAULT))
+                total_tandas = (len(imagenes_optimizadas) + tam_lote_seguro - 1) // tam_lote_seguro if imagenes_optimizadas else 0
+                barra_ia = st.progress(0)
+
+                for nro_tanda, inicio in enumerate(range(0, len(imagenes_optimizadas), tam_lote_seguro), start=1):
+                    tanda = imagenes_optimizadas[inicio:inicio + tam_lote_seguro]
+                    nombres = ", ".join(nombre for _, nombre in tanda)
+                    with st.spinner(f"Leyendo tanda {nro_tanda} de {total_tandas}: {nombres}"):
+                        nuevas.extend(analizar_ordenes_lote_con_ia(tanda))
+                    barra_ia.progress(nro_tanda / max(total_tandas, 1))
 
                 st.session_state.ordenes_detectadas.extend(nuevas)
-                st.success(f"Se leyeron {len(nuevas)} orden/es. Revisá la tabla antes de cargar.")
+                st.success(
+                    f"Se procesaron {len(nuevas)} orden/es. "
+                    "Revisá la tabla antes de cargar. Si alguna tanda figura REVISAR, corregila manualmente sin volver a gastar IA."
+                )
 
         if st.session_state.ordenes_detectadas:
             st.session_state.ordenes_detectadas, _ = preparar_metros_automaticos_por_lote(
