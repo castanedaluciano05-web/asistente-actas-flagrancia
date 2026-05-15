@@ -20,7 +20,7 @@ except Exception:
 
 def analizar_orden_con_ia(imagen_pil):
     """Envía la foto a Gemini para extraer los datos de MORO."""
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     prompt = """
     Analiza esta hoja de producción de cortinas de la empresa MORO. 
     Extrae EXACTAMENTE estos datos y devuélvelos en formato JSON puro:
