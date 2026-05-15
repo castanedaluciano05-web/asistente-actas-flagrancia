@@ -21,7 +21,7 @@ except Exception:
 # =====================================================
 
 st.set_page_config(
-    page_title="CastaMuebles IA V8 - Cabezal 16 / Ruedo 5",
+    page_title="CastaMuebles IA V9 - WhatsApp / Pegar JSON",
     page_icon="🧵",
     layout="wide"
 )
@@ -2101,51 +2101,55 @@ def extraer_ordenes_desde_json_chatgpt(payload, nombre_archivo="ordenes_chatgpt.
     return []
 
 
+def extraer_payload_json_desde_texto(texto):
+    """
+    Lee JSON pegado como texto. Sirve para WhatsApp/celular:
+    tolera texto antes/después y bloques ```json ... ```.
+    """
+    texto = (texto or "").strip()
+    if not texto:
+        raise ValueError("No pegaste ningún texto JSON.")
+
+    # Si viene dentro de un bloque markdown, intenta tomar el bloque que empiece con { o [.
+    texto_limpio = texto.replace("```json", "```").replace("```JSON", "```").replace("```Json", "```")
+    if "```" in texto_limpio:
+        partes = texto_limpio.split("```")
+        for parte in partes:
+            candidato = parte.strip()
+            if candidato.startswith("{") or candidato.startswith("["):
+                texto_limpio = candidato
+                break
+
+    # Si WhatsApp agregó título, mensaje o firmas, recorta desde el primer JSON al último cierre.
+    posiciones_inicio = [pos for pos in [texto_limpio.find("{"), texto_limpio.find("[")] if pos >= 0]
+    if posiciones_inicio:
+        inicio = min(posiciones_inicio)
+        fin = max(texto_limpio.rfind("}"), texto_limpio.rfind("]"))
+        if fin > inicio:
+            texto_limpio = texto_limpio[inicio:fin + 1]
+
+    return json.loads(texto_limpio)
+
+
 def leer_json_subido(uploaded_file):
-    """Lee un archivo JSON subido desde Streamlit, tolerando BOM UTF-8."""
+    """Lee archivo JSON/TXT subido desde Streamlit, tolerando BOM UTF-8."""
     contenido = uploaded_file.getvalue().decode("utf-8-sig")
-    return json.loads(contenido)
+    return extraer_payload_json_desde_texto(contenido)
 
 
-def mostrar_importador_json_chatgpt():
-    st.markdown("### 📥 Importar JSON desde ChatGPT")
-    st.write(
-        "Usá esta opción cuando no quieras gastar Gemini/API: me pasás las fotos por ChatGPT, "
-        "yo te devuelvo un JSON, y acá lo importás para revisar y cargar al programa."
-    )
+def normalizar_payload_importado(payload, origen="importacion_chatgpt"):
+    """Convierte cualquier payload aceptado en órdenes listas para bandeja."""
+    ordenes_importadas = extraer_ordenes_desde_json_chatgpt(payload, origen)
+    ordenes_importadas, _ = preparar_metros_automaticos_por_lote(ordenes_importadas, solo_tildadas=False)
+    return ordenes_importadas
 
-    ejemplo = plantilla_json_chatgpt()
-    st.download_button(
-        "⬇️ Descargar modelo de JSON para ChatGPT",
-        data=json.dumps(ejemplo, ensure_ascii=False, indent=4),
-        file_name="modelo_ordenes_chatgpt.json",
-        mime="application/json",
-        key="descargar_modelo_json_chatgpt"
-    )
 
-    archivo_json = st.file_uploader(
-        "Subir JSON generado por ChatGPT",
-        type=["json"],
-        key="uploader_json_chatgpt"
-    )
-
-    if not archivo_json:
-        st.info("Cuando subas el JSON, el programa lo agrega a la misma bandeja de revisión. Nada se manda a corte sin confirmar.")
-        return
-
-    try:
-        payload = leer_json_subido(archivo_json)
-        ordenes_importadas = extraer_ordenes_desde_json_chatgpt(payload, archivo_json.name)
-        ordenes_importadas, _ = preparar_metros_automaticos_por_lote(ordenes_importadas, solo_tildadas=False)
-    except Exception as e:
-        st.error(f"No se pudo leer el JSON: {e}")
-        return
-
+def mostrar_preview_importacion_chatgpt(ordenes_importadas):
     if not ordenes_importadas:
-        st.error("El JSON no tiene un formato reconocido. Debe ser una lista de órdenes o un respaldo con telas/cortinas.")
+        st.error("No se detectaron órdenes en el JSON. Revisá que hayas copiado todo el texto completo.")
         return
 
-    st.success(f"JSON leído correctamente: {len(ordenes_importadas)} orden/es detectada/s.")
+    st.success(f"Lectura correcta: {len(ordenes_importadas)} orden/es detectada/s.")
 
     df_preview = pd.DataFrame(ordenes_importadas)
     columnas_preview = [
@@ -2163,10 +2167,90 @@ def mostrar_importador_json_chatgpt():
         hide_index=True
     )
 
-    if st.button("📥 Agregar este JSON a la bandeja de revisión", type="primary", key="btn_agregar_json_chatgpt"):
-        st.session_state.ordenes_detectadas.extend(ordenes_importadas)
-        st.success("JSON agregado a la bandeja. Revisá, corregí si hace falta y confirmá las filas tildadas.")
-        st.rerun()
+
+def mostrar_importador_json_chatgpt():
+    st.markdown("### 📥 Importar órdenes desde ChatGPT / WhatsApp")
+    st.write(
+        "Usá esta opción cuando no quieras gastar Gemini/API. Si el celular no deja subir archivos JSON, "
+        "copiá el texto del JSON desde WhatsApp y pegalo acá."
+    )
+
+    ejemplo = plantilla_json_chatgpt()
+    st.download_button(
+        "⬇️ Descargar modelo de JSON para ChatGPT",
+        data=json.dumps(ejemplo, ensure_ascii=False, indent=4),
+        file_name="modelo_ordenes_chatgpt.json",
+        mime="application/json",
+        key="descargar_modelo_json_chatgpt"
+    )
+
+    tab_pegar, tab_archivo = st.tabs(["📋 Pegar JSON desde WhatsApp", "📁 Subir archivo JSON/TXT"])
+
+    with tab_pegar:
+        st.markdown("""
+        <div class="info-box">
+            📱 <b>Recomendado para celular y WhatsApp:</b><br>
+            1. Copiá el mensaje JSON completo que te mandé por WhatsApp o ChatGPT.<br>
+            2. Pegalo en el cuadro de abajo.<br>
+            3. Tocá <b>Leer texto pegado</b>.<br>
+            4. Revisá y agregá a la bandeja.
+        </div>
+        """, unsafe_allow_html=True)
+
+        texto_json = st.text_area(
+            "Pegá acá el JSON completo",
+            value=st.session_state.get("texto_json_pegado_chatgpt", ""),
+            height=260,
+            key="texto_json_pegado_chatgpt"
+        )
+
+        if st.button("📋 Leer texto pegado", type="primary", key="btn_leer_texto_json_chatgpt"):
+            try:
+                payload = extraer_payload_json_desde_texto(texto_json)
+                ordenes_importadas = normalizar_payload_importado(payload, "texto_pegado_whatsapp_chatgpt")
+                st.session_state.ordenes_importadas_chatgpt_tmp = ordenes_importadas
+                st.session_state.origen_importacion_chatgpt_tmp = "texto pegado"
+            except Exception as e:
+                st.session_state.ordenes_importadas_chatgpt_tmp = []
+                st.error(f"No se pudo leer el texto pegado: {e}")
+
+    with tab_archivo:
+        st.info("Esta opción funciona bien en PC. En algunos celulares Android el selector no deja tomar archivos .json; en ese caso usá la pestaña de pegar texto.")
+        archivo_json = st.file_uploader(
+            "Subir archivo generado por ChatGPT (.json o .txt)",
+            type=["json", "txt"],
+            key="uploader_json_chatgpt"
+        )
+
+        if archivo_json and st.button("📁 Leer archivo", type="primary", key="btn_leer_archivo_json_chatgpt"):
+            try:
+                payload = leer_json_subido(archivo_json)
+                ordenes_importadas = normalizar_payload_importado(payload, archivo_json.name)
+                st.session_state.ordenes_importadas_chatgpt_tmp = ordenes_importadas
+                st.session_state.origen_importacion_chatgpt_tmp = archivo_json.name
+            except Exception as e:
+                st.session_state.ordenes_importadas_chatgpt_tmp = []
+                st.error(f"No se pudo leer el archivo: {e}")
+
+    ordenes_tmp = st.session_state.get("ordenes_importadas_chatgpt_tmp", [])
+    if not ordenes_tmp:
+        st.info("Cuando leas un JSON, el programa mostrará una vista previa antes de agregarlo a la bandeja. Nada se manda a corte sin confirmar.")
+        return
+
+    st.markdown(f"#### Vista previa importada desde: {st.session_state.get('origen_importacion_chatgpt_tmp', 'ChatGPT')}")
+    mostrar_preview_importacion_chatgpt(ordenes_tmp)
+
+    col_agregar, col_limpiar = st.columns([2, 1])
+    with col_agregar:
+        if st.button("📥 Agregar a la bandeja de revisión", type="primary", key="btn_agregar_importacion_chatgpt"):
+            st.session_state.ordenes_detectadas.extend(ordenes_tmp)
+            st.session_state.ordenes_importadas_chatgpt_tmp = []
+            st.success("Importación agregada a la bandeja. Revisá, corregí si hace falta y confirmá las filas tildadas.")
+            st.rerun()
+    with col_limpiar:
+        if st.button("🧹 Limpiar importación", key="btn_limpiar_importacion_chatgpt"):
+            st.session_state.ordenes_importadas_chatgpt_tmp = []
+            st.rerun()
 
 
 def mostrar_resumen_bandeja():
