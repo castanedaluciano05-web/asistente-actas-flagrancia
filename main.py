@@ -1743,6 +1743,182 @@ def preparar_metros_automaticos_por_lote(ordenes, solo_tildadas=False):
     return ordenes, resumen
 
 
+
+def plantilla_json_chatgpt():
+    """Modelo simple para que ChatGPT devuelva órdenes compatibles con el programa."""
+    return [
+        {
+            "numero_orden": "",
+            "cliente": "",
+            "telefono": "",
+            "lote": "Lote 1",
+            "nombre_tela": "Nombre de la tela",
+            "color_tela": "Color",
+            "metros_recibidos": 0.0,
+            "ambiente": "Dormitorio 1",
+            "ancho_riel": 0.0,
+            "alto_terminado": 0.0,
+            "metraje_corte": 0.0,
+            "apertura": "Central",
+            "uso": "Vertical",
+            "observaciones": ""
+        }
+    ]
+
+
+def extraer_ordenes_desde_json_chatgpt(payload, nombre_archivo="ordenes_chatgpt.json"):
+    """
+    Acepta JSON generado por ChatGPT o un respaldo del programa y lo convierte
+    en filas de la bandeja de revisión.
+
+    Formatos aceptados:
+    1) Lista directa de órdenes: [{...}, {...}]
+    2) Diccionario con claves: ordenes, ordenes_detectadas, bandeja, items o trabajos.
+    3) Respaldo CastaMuebles con estructura: {cliente, telefono, telas:[{..., cortinas:[...]}]}.
+    """
+    ordenes = []
+
+    if isinstance(payload, list):
+        for idx, raw in enumerate(payload, start=1):
+            archivo = f"{nombre_archivo} / fila {idx}"
+            ordenes.append(normalizar_orden_detectada(raw, archivo))
+        return ordenes
+
+    if not isinstance(payload, dict):
+        return []
+
+    cliente_general = texto_seguro(payload.get("cliente") or payload.get("cliente_general"))
+    telefono_general = texto_seguro(payload.get("telefono") or payload.get("telefono_general"))
+
+    # Formato respaldo completo del programa: data/telas/cortinas.
+    telas = payload.get("telas")
+    if isinstance(telas, list):
+        for idx_tela, tela in enumerate(telas, start=1):
+            if not isinstance(tela, dict):
+                continue
+            cortinas = tela.get("cortinas", [])
+            if not isinstance(cortinas, list):
+                continue
+
+            lote_tela = texto_seguro(tela.get("lote") or tela.get("nombre"), f"Lote {idx_tela}")
+            nombre_tela = texto_seguro(tela.get("nombre") or tela.get("nombre_tela"), lote_tela)
+            color_tela = texto_seguro(tela.get("color") or tela.get("color_tela"))
+            metros_lote = numero_seguro(tela.get("metros_recibidos") or tela.get("metros_tela"), 0.0)
+
+            for idx_cortina, cortina in enumerate(cortinas, start=1):
+                if not isinstance(cortina, dict):
+                    continue
+                raw = {
+                    "numero_orden": cortina.get("numero_orden") or cortina.get("orden"),
+                    "cliente": cliente_general or cortina.get("cliente"),
+                    "telefono": telefono_general or cortina.get("telefono"),
+                    "lote": lote_tela,
+                    "nombre_tela": nombre_tela,
+                    "color_tela": color_tela,
+                    "metros_recibidos": metros_lote,
+                    "ambiente": cortina.get("ambiente"),
+                    "ancho_riel": cortina.get("ancho_riel"),
+                    "alto_terminado": cortina.get("alto_terminado"),
+                    "metraje_corte": cortina.get("metraje_corte") or cortina.get("metraje_asignado"),
+                    "apertura": cortina.get("apertura"),
+                    "uso": cortina.get("uso") or cortina.get("tipo_trabajo"),
+                    "observaciones": cortina.get("observaciones") or cortina.get("nota"),
+                }
+                archivo = f"{nombre_archivo} / lote {idx_tela} / cortina {idx_cortina}"
+                ordenes.append(normalizar_orden_detectada(raw, archivo))
+        return ordenes
+
+    # Formatos de bandeja / ChatGPT.
+    for clave in ["ordenes", "ordenes_detectadas", "bandeja", "items", "trabajos", "cortinas"]:
+        lista = payload.get(clave)
+        if isinstance(lista, list):
+            for idx, raw in enumerate(lista, start=1):
+                if isinstance(raw, dict):
+                    raw = dict(raw)
+                    raw.setdefault("cliente", cliente_general)
+                    raw.setdefault("telefono", telefono_general)
+                archivo = f"{nombre_archivo} / {clave} {idx}"
+                ordenes.append(normalizar_orden_detectada(raw, archivo))
+            return ordenes
+
+    # Si viene una sola orden como diccionario suelto.
+    if any(k in payload for k in ["ambiente", "ancho_riel", "ancho_cortina", "alto_terminado", "metraje_corte", "corte"]):
+        payload = dict(payload)
+        payload.setdefault("cliente", cliente_general)
+        payload.setdefault("telefono", telefono_general)
+        return [normalizar_orden_detectada(payload, nombre_archivo)]
+
+    return []
+
+
+def leer_json_subido(uploaded_file):
+    """Lee un archivo JSON subido desde Streamlit, tolerando BOM UTF-8."""
+    contenido = uploaded_file.getvalue().decode("utf-8-sig")
+    return json.loads(contenido)
+
+
+def mostrar_importador_json_chatgpt():
+    st.markdown("### 📥 Importar JSON desde ChatGPT")
+    st.write(
+        "Usá esta opción cuando no quieras gastar Gemini/API: me pasás las fotos por ChatGPT, "
+        "yo te devuelvo un JSON, y acá lo importás para revisar y cargar al programa."
+    )
+
+    ejemplo = plantilla_json_chatgpt()
+    st.download_button(
+        "⬇️ Descargar modelo de JSON para ChatGPT",
+        data=json.dumps(ejemplo, ensure_ascii=False, indent=4),
+        file_name="modelo_ordenes_chatgpt.json",
+        mime="application/json",
+        key="descargar_modelo_json_chatgpt"
+    )
+
+    archivo_json = st.file_uploader(
+        "Subir JSON generado por ChatGPT",
+        type=["json"],
+        key="uploader_json_chatgpt"
+    )
+
+    if not archivo_json:
+        st.info("Cuando subas el JSON, el programa lo agrega a la misma bandeja de revisión. Nada se manda a corte sin confirmar.")
+        return
+
+    try:
+        payload = leer_json_subido(archivo_json)
+        ordenes_importadas = extraer_ordenes_desde_json_chatgpt(payload, archivo_json.name)
+        ordenes_importadas, _ = preparar_metros_automaticos_por_lote(ordenes_importadas, solo_tildadas=False)
+    except Exception as e:
+        st.error(f"No se pudo leer el JSON: {e}")
+        return
+
+    if not ordenes_importadas:
+        st.error("El JSON no tiene un formato reconocido. Debe ser una lista de órdenes o un respaldo con telas/cortinas.")
+        return
+
+    st.success(f"JSON leído correctamente: {len(ordenes_importadas)} orden/es detectada/s.")
+
+    df_preview = pd.DataFrame(ordenes_importadas)
+    columnas_preview = [
+        "estado", "numero_orden", "cliente", "lote", "nombre_tela", "color_tela",
+        "metros_recibidos", "ambiente", "ancho_riel", "alto_terminado",
+        "metraje_corte", "apertura", "uso", "motivo_revision"
+    ]
+    for col in columnas_preview:
+        if col not in df_preview.columns:
+            df_preview[col] = ""
+
+    st.dataframe(
+        df_preview[columnas_preview],
+        use_container_width=True,
+        hide_index=True
+    )
+
+    if st.button("📥 Agregar este JSON a la bandeja de revisión", type="primary", key="btn_agregar_json_chatgpt"):
+        st.session_state.ordenes_detectadas.extend(ordenes_importadas)
+        st.success("JSON agregado a la bandeja. Revisá, corregí si hace falta y confirmá las filas tildadas.")
+        st.rerun()
+
+
 def mostrar_resumen_bandeja():
     ordenes = st.session_state.get("ordenes_detectadas", [])
     if not ordenes:
@@ -1783,14 +1959,17 @@ def mostrar_resumen_bandeja():
 
 
 def mostrar_scanner_ia_masivo():
-    st.markdown("## 📥 Bandeja IA de órdenes de administración")
+    st.markdown("## 📥 Bandeja de órdenes de administración")
     st.markdown(
-        "Subí una o varias fotos de órdenes MORO. Primero se leen y se revisan; "
+        "Importá un JSON desde ChatGPT o subí fotos de órdenes MORO. Primero se leen y se revisan; "
         "recién después se cargan en el lote correcto. No hace falta crear el lote ni cargar metros antes: "
         "si la oficina informa el metraje del lote, se toma de la orden; si no aparece, se calcula por suma de cortes."
     )
 
-    with st.expander("📸 Escanear órdenes MORO con IA", expanded=True):
+    with st.expander("📥 Importar JSON desde ChatGPT (sin gastar IA)", expanded=True):
+        mostrar_importador_json_chatgpt()
+
+    with st.expander("📸 Escanear órdenes MORO con IA", expanded=False):
         fotos = st.file_uploader(
             "Elegir una o varias imágenes de órdenes",
             type=["jpg", "jpeg", "png"],
