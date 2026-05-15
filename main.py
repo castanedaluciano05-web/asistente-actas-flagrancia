@@ -20,7 +20,7 @@ except Exception:
 # =====================================================
 
 st.set_page_config(
-    page_title="CastaMuebles IA - Gestión Textil Pro",
+    page_title="CastaMuebles IA V6 - Gestión Textil Pro",
     page_icon="🧵",
     layout="wide"
 )
@@ -321,12 +321,15 @@ def calcular_pico_maestro_lote(tela):
 
 
 def base_consumo_cortina(cortina, solapa_cm):
-    apertura = cortina.get("apertura", "Central")
-    hay_cruce = cortina.get("hay_cruce", apertura == "Central")
-    ancho_riel = float(cortina.get("ancho_riel", 0.0))
+    """
+    Base rígida real de una cortina.
 
-    solapa_m = (solapa_cm / 100) if hay_solapa_real(apertura, hay_cruce) else 0
-    return ancho_riel + solapa_m + DOBLADILLO_TOTAL_M
+    Antes se calculaba como ancho_riel + solapa + 0.08 m.
+    Eso era correcto para un solo paño, pero en apertura Central hay dos paños
+    y cada paño lleva sus dobladillos laterales. Por seguridad, ahora se toma
+    la misma estructura que usa el pico maestro: suma del trabajo de cada paño.
+    """
+    return sum(float(pano["trabajo"]) for pano in estructura_panos_cortina(cortina, solapa_cm))
 
 
 def calcular_metraje_cortina(cortina, solapa_cm, fruncido):
@@ -353,7 +356,7 @@ def fruncido_maximo_parejo(tela):
     base = total_base_tela(tela)
     if base <= 0:
         return 0
-    return tela["metros_recibidos"] / base
+    return float(tela.get("metros_recibidos", 0.0)) / base
 
 
 # =====================================================
@@ -1413,6 +1416,29 @@ def texto_seguro(valor, default=""):
     return texto
 
 
+def clave_texto_lote(valor):
+    """Normaliza texto para comparar lotes/telas sin confundir Lote 1 con Lote 10."""
+    texto = texto_seguro(valor).lower().strip()
+    reemplazos = {
+        "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n",
+        "º": "", "°": ""
+    }
+    for a, b in reemplazos.items():
+        texto = texto.replace(a, b)
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip()
+
+
+def lote_coincide_en_texto(lote_txt, texto):
+    lote_norm = clave_texto_lote(lote_txt)
+    texto_norm = clave_texto_lote(texto)
+    if not lote_norm or not texto_norm:
+        return False
+    # coincidencia por token completo; evita que lote 1 coincida con lote 10.
+    patron = r"(^|[^0-9a-z])" + re.escape(lote_norm) + r"([^0-9a-z]|$)"
+    return bool(re.search(patron, texto_norm))
+
+
 def normalizar_apertura(valor):
     texto = texto_seguro(valor).lower()
     texto = texto.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
@@ -1439,15 +1465,55 @@ def normalizar_trabajo(valor):
 
 
 def clave_lote_desde_orden(orden):
+    """
+    Clave SEGURA para agrupar órdenes antes de cargar al programa.
+
+    Regla aprobada para taller:
+    - Si la orden trae LOTE, el LOTE manda. No se separa por pequeñas diferencias
+      de tela/color leídas por IA, porque eso parte el mismo lote y puede hacer
+      que el sistema calcule mal los metros recibidos.
+    - Solo si NO hay lote, se agrupa por tela + color.
+    """
     lote = texto_seguro(orden.get("lote"))
     tela = texto_seguro(orden.get("nombre_tela"))
     color = texto_seguro(orden.get("color_tela"))
 
-    partes = [p for p in [lote, tela, color] if p]
+    if lote:
+        return f"LOTE: {lote}"
+
+    partes = []
+    if tela:
+        partes.append(f"TELA: {tela}")
+    if color:
+        partes.append(f"COLOR: {color}")
+
     if not partes:
         return ""
 
     return " | ".join(partes)
+
+
+def etiqueta_lote_para_mostrar(clave, filas):
+    """Etiqueta visual más completa para la tabla de auditoría."""
+    if not filas:
+        return clave
+
+    lote = texto_seguro(filas[0].get("lote"))
+    telas = sorted({texto_seguro(o.get("nombre_tela")) for o in filas if texto_seguro(o.get("nombre_tela"))})
+    colores = sorted({texto_seguro(o.get("color_tela")) for o in filas if texto_seguro(o.get("color_tela"))})
+
+    partes = []
+    if lote:
+        partes.append(f"LOTE: {lote}")
+    elif clave:
+        partes.append(clave)
+
+    if telas:
+        partes.append("Tela: " + ", ".join(telas[:3]) + ("..." if len(telas) > 3 else ""))
+    if colores:
+        partes.append("Color: " + ", ".join(colores[:3]) + ("..." if len(colores) > 3 else ""))
+
+    return " | ".join(partes) if partes else clave
 
 
 def evaluar_estado_orden(orden):
@@ -1543,6 +1609,8 @@ def analizar_orden_con_ia(imagen_pil, nombre_archivo="orden"):
       * metraje_corte = corte asignado a una cortina/paño/trabajo puntual.
       * metros_recibidos = total de metros que administración envía para todo el lote/tela.
     - Si la orden no muestra metros totales del lote, dejá metros_recibidos en null; el sistema lo calculará por suma de cortes al agrupar.
+    - IMPORTANTE: solo completá metros_recibidos si ves una frase clara como "metros recibidos", "metros enviados", "total de tela", "total lote" o similar.
+    - Si solo ves "corte exacto", "corte de paño", "metraje corte" o un número junto a la cortina, eso va en metraje_corte y NO en metros_recibidos.
     """
 
     try:
@@ -1566,23 +1634,39 @@ def encontrar_o_crear_lote(orden):
     nombre_lote = nombre_tela or lote_txt or "Lote importado"
     color_lote = color_tela
 
-    def norm(x):
-        return texto_seguro(x).lower().strip()
+    lote_norm = clave_texto_lote(lote_txt)
+    nombre_norm = clave_texto_lote(nombre_lote)
+    color_norm = clave_texto_lote(color_lote)
 
     for tela in data["telas"]:
-        mismo_nombre = norm(tela.get("nombre")) == norm(nombre_lote)
-        mismo_color = not color_lote or norm(tela.get("color")) == norm(color_lote)
-        mismo_lote = lote_txt and norm(lote_txt) in norm(tela.get("nombre"))
+        tela_lote_id = clave_texto_lote(tela.get("lote_id"))
+        tela_nombre_base = clave_texto_lote(tela.get("nombre_tela_base") or tela.get("nombre"))
+        tela_color = clave_texto_lote(tela.get("color"))
 
-        if (mismo_nombre and mismo_color) or mismo_lote:
+        if lote_norm:
+            # Si la orden trae lote, el lote manda. No alcanza con mismo nombre/color,
+            # porque puede haber dos lotes distintos de la misma tela y color.
+            coincide = (
+                (tela_lote_id and tela_lote_id == lote_norm)
+                or (not tela_lote_id and lote_coincide_en_texto(lote_txt, tela.get("nombre")))
+            )
+        else:
+            # Solo cuando no hay lote, agrupamos por nombre de tela + color.
+            coincide = (
+                tela_nombre_base == nombre_norm
+                and (not color_norm or tela_color == color_norm)
+            )
+
+        if coincide:
             if metros > 0:
                 metros_actuales = float(tela.get("metros_recibidos", 0.0))
-                # La bandeja IA trabaja con el metraje de oficina como fuente principal.
-                # Si el lote ya existía pero estaba en cero, o si venimos de una confirmación
-                # de bandeja, actualizamos el metraje del lote para evitar cortes con fruncido falso.
                 if metros_actuales <= 0 or bool(orden.get("_actualizar_metros_lote")):
                     tela["metros_recibidos"] = metros
                     tela["origen_metros"] = texto_seguro(orden.get("origen_metros"), "Oficina / IA")
+            if lote_txt and not tela.get("lote_id"):
+                tela["lote_id"] = lote_txt
+            if nombre_tela and not tela.get("nombre_tela_base"):
+                tela["nombre_tela_base"] = nombre_tela
             if not tela.get("color") and color_lote:
                 tela["color"] = color_lote
             tela.setdefault("cortinas", [])
@@ -1590,6 +1674,8 @@ def encontrar_o_crear_lote(orden):
 
     nuevo = {
         "nombre": nombre_lote if not lote_txt else f"{nombre_lote} - Lote {lote_txt}",
+        "lote_id": lote_txt,
+        "nombre_tela_base": nombre_tela or nombre_lote,
         "color": color_lote,
         "metros_recibidos": metros,
         "origen_metros": texto_seguro(orden.get("origen_metros"), "Oficina / IA") if metros > 0 else "",
@@ -1684,14 +1770,13 @@ def dataframe_a_ordenes(editado):
 
 def preparar_metros_automaticos_por_lote(ordenes, solo_tildadas=False):
     """
-    Completa metros_recibidos por lote.
+    Completa metros_recibidos por lote con auditoría.
 
     Prioridad:
-    1) Si administración/IA leyó metros_recibidos del lote, usa ese total.
-    2) Si no hay total de lote, calcula metros_recibidos como suma de metraje_corte
-       de las cortinas del mismo lote/tela/color.
-
-    Esto evita pedir el metraje manualmente antes de ver los lotes.
+    1) Si administración/IA leyó un TOTAL REAL DEL LOTE, usa ese total.
+    2) Si no hay total de lote, calcula metros_recibidos como suma de metraje_corte.
+    3) Si la IA confundió metros_recibidos con el corte individual de cada orden,
+       descarta esos valores como total de lote y suma los cortes.
     """
     grupos = {}
 
@@ -1707,32 +1792,73 @@ def preparar_metros_automaticos_por_lote(ordenes, solo_tildadas=False):
 
     for clave, filas in grupos.items():
         suma_cortes = round(sum(numero_seguro(o.get("metraje_corte"), 0.0) for o in filas), 2)
-        valores_oficina = sorted({
-            round(numero_seguro(o.get("metros_recibidos"), 0.0), 2)
-            for o in filas
-            if numero_seguro(o.get("metros_recibidos"), 0.0) > 0
-            and not texto_seguro(o.get("origen_metros")).lower().startswith("calculado")
-        })
 
-        if valores_oficina:
-            # Si se repite el mismo total en varias órdenes del lote, no se suma varias veces.
-            # Si hay valores diferentes, usamos el mayor y lo avisamos en el resumen.
+        valores_oficina_filas = []
+        for o in filas:
+            metros_fila = round(numero_seguro(o.get("metros_recibidos"), 0.0), 2)
+            origen_fila = texto_seguro(o.get("origen_metros")).lower()
+            if metros_fila > 0 and not origen_fila.startswith("calculado"):
+                valores_oficina_filas.append((o, metros_fila))
+
+        valores_oficina = sorted({v for _, v in valores_oficina_filas})
+
+        # Detección de error frecuente:
+        # la IA pone en metros_recibidos el mismo valor que el corte de esa orden.
+        coincidencias_corte = 0
+        for o, metros_fila in valores_oficina_filas:
+            corte_fila = round(numero_seguro(o.get("metraje_corte"), 0.0), 2)
+            if corte_fila > 0 and abs(metros_fila - corte_fila) <= 0.03:
+                coincidencias_corte += 1
+
+        parece_corte_individual = (
+            len(filas) > 1
+            and coincidencias_corte >= max(1, len(valores_oficina_filas) - 1)
+            and valores_oficina_filas
+        )
+
+        if parece_corte_individual:
+            metros_lote = suma_cortes
+            origen = "Calculado por suma de cortes"
+            aviso = "La IA parecía usar el corte individual como metros del lote; se corrigió sumando los cortes del grupo."
+        elif valores_oficina:
             metros_lote = max(valores_oficina)
             origen = "Oficina"
-            aviso = "" if len(valores_oficina) == 1 else f"Valores distintos detectados: {valores_oficina}. Se usó el mayor."
+            if len(valores_oficina) == 1:
+                aviso = ""
+            else:
+                aviso = f"Valores distintos de metros de lote detectados: {valores_oficina}. Se usó el mayor; revisar si son lotes distintos."
         else:
             metros_lote = suma_cortes
             origen = "Calculado por suma de cortes"
             aviso = "No se detectó total de lote; se sumaron los cortes de las órdenes del mismo lote."
 
         for orden in filas:
-            if numero_seguro(orden.get("metros_recibidos"), 0.0) <= 0 or solo_tildadas:
+            if numero_seguro(orden.get("metros_recibidos"), 0.0) <= 0 or solo_tildadas or parece_corte_individual:
                 orden["metros_recibidos"] = metros_lote
                 orden["origen_metros"] = origen
             orden["_actualizar_metros_lote"] = solo_tildadas
+            if aviso:
+                obs = texto_seguro(orden.get("observaciones"))
+                if "AUDITORÍA LOTE" not in obs:
+                    orden["observaciones"] = (obs + " | " if obs else "") + "AUDITORÍA LOTE: " + aviso
+
+        # Aviso extra: si el grupo se armó por LOTE y la IA trajo variantes de tela/color,
+        # no se separa el lote; se informa para que el usuario revise visualmente.
+        etiqueta = etiqueta_lote_para_mostrar(clave, filas)
+        if clave.startswith("LOTE:"):
+            telas_distintas = sorted({texto_seguro(o.get("nombre_tela")) for o in filas if texto_seguro(o.get("nombre_tela"))})
+            colores_distintos = sorted({texto_seguro(o.get("color_tela")) for o in filas if texto_seguro(o.get("color_tela"))})
+            extras = []
+            if len(telas_distintas) > 1:
+                extras.append("telas leídas distintas dentro del mismo lote")
+            if len(colores_distintos) > 1:
+                extras.append("colores leídos distintos dentro del mismo lote")
+            if extras:
+                aviso_extra = "Mismo lote agrupado correctamente, pero revisar: " + ", ".join(extras) + "."
+                aviso = (aviso + " | " if aviso else "") + aviso_extra
 
         resumen.append({
-            "lote_tela_color": clave,
+            "lote_tela_color": etiqueta,
             "cortinas": len(filas),
             "suma_cortes": suma_cortes,
             "metros_lote": metros_lote,
@@ -1741,7 +1867,6 @@ def preparar_metros_automaticos_por_lote(ordenes, solo_tildadas=False):
         })
 
     return ordenes, resumen
-
 
 
 def plantilla_json_chatgpt():
@@ -2108,7 +2233,7 @@ else:
 
 
     st.markdown(
-        '<div class="main-title">🧵 CastaMuebles IA - Gestión Textil Pro</div>',
+        '<div class="main-title">🧵 CastaMuebles IA V6 - Gestión Textil Pro</div>',
         unsafe_allow_html=True
     )
 
@@ -2438,12 +2563,17 @@ else:
             metros_recibidos = float(tela.get("metros_recibidos", 0.0))
             fruncido_deseado = float(tela.get("fruncido_deseado", 2.2))
 
-            total_necesario = total_metraje_tela(tela, fruncido_deseado)
+            total_teorico_fruncido = total_metraje_tela(tela, fruncido_deseado)
             total_asignado = sum(
                 float(c.get("metraje_asignado", 0.0))
                 for c in tela["cortinas"]
             )
+            # Validación principal del lote:
+            # La tela que falta/sobra se controla contra los cortes exactos/asignados
+            # que vienen de administración o fueron cargados manualmente.
+            # La fórmula teórica queda como control técnico, no como sentencia de falta de tela.
             sobrante_asignado = metros_recibidos - total_asignado
+            diferencia_teorica = total_asignado - total_teorico_fruncido
             fruncido_max = fruncido_maximo_parejo(tela)
 
             st.markdown(f"### 📦 {nombre_tela} {f'- {color_tela}' if color_tela else ''}")
@@ -2451,9 +2581,25 @@ else:
             r1, r2, r3, r4 = st.columns(4)
 
             r1.metric("Metros recibidos", f"{metros_recibidos:.2f} m")
-            r2.metric("Necesario teórico", f"{total_necesario:.2f} m")
-            r3.metric("Total asignado", f"{total_asignado:.2f} m")
-            r4.metric("Sobrante real", f"{sobrante_asignado:.2f} m")
+            r2.metric("Corte asignado / administración", f"{total_asignado:.2f} m")
+            r3.metric("Sobrante contra cortes", f"{sobrante_asignado:.2f} m")
+            r4.metric("Control teórico", f"{total_teorico_fruncido:.2f} m")
+
+            origen_metros_lote = texto_seguro(tela.get("origen_metros"))
+            if origen_metros_lote:
+                st.caption(f"Origen metros del lote: {origen_metros_lote}")
+
+            if tela.get("lote_id"):
+                st.caption(f"Lote identificado: {tela.get('lote_id')}")
+
+            if origen_metros_lote.lower().startswith("calculado"):
+                st.info("Metros del lote calculados por suma de cortes importados. Revisar contra la orden de administración antes de cortar.")
+
+            if abs(diferencia_teorica) >= 0.20:
+                st.info(
+                    f"Control técnico: el corte asignado difiere {diferencia_teorica:+.2f} m del cálculo teórico por fruncido deseado. "
+                    "Esto NO declara falta de tela; solo sirve para revisar fruncido, paños o metraje enviado por administración."
+                )
 
             if not tela["cortinas"]:
                 st.warning("Esta tela todavía no tiene cortinas cargadas.")
@@ -2461,16 +2607,16 @@ else:
 
             if metros_recibidos <= 0:
                 st.warning("Cargá los metros recibidos para validar si alcanza.")
-            elif sobrante_asignado >= 0:
+            elif sobrante_asignado >= -0.01:
                 st.markdown("""
                 <div class="ok-box">
-                    ✅ La tela alcanza según el metraje asignado a cada cortina.
+                    ✅ La tela alcanza según los cortes exactos/asignados a cada cortina.
                 </div>
                 """, unsafe_allow_html=True)
             else:
                 st.markdown("""
                 <div class="danger-box">
-                    ⚠️ La tela NO alcanza. Estás asignando más metros de los recibidos.
+                    ⚠️ La tela NO alcanza contra los cortes exactos/asignados. Revisar lote, metros recibidos y órdenes agrupadas antes de cortar.
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -2488,8 +2634,9 @@ else:
 
                 if pico_maestro <= 5:
                     st.warning(
-                        "⚠️ Pico maestro bajo. Para este lote, la tela puede no alcanzar "
-                        "para mantener un pico estético."
+                        "⚠️ Pico maestro bajo. Esto no significa necesariamente que falte tela; "
+                        "significa que, con los metros cargados para este lote, el pico/fruncido puede quedar pobre. "
+                        "Revisar lote, metraje recibido y cortes antes de fabricar."
                     )
 
 
