@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import json
 import os
 import re
+import math
 from pathlib import Path
 from datetime import date
 from textwrap import dedent
@@ -21,7 +22,7 @@ except Exception:
 # =====================================================
 
 st.set_page_config(
-    page_title="CastaMuebles IA V9 - WhatsApp / Pegar JSON",
+    page_title="CastaMuebles IA V10 - Tablas ajustadas",
     page_icon="🧵",
     layout="wide"
 )
@@ -34,6 +35,8 @@ SOLAPA_DEFAULT_CM = 10
 CABEZAL_DEFAULT_CM = 16
 RUEDO_DEFAULT_CM = 5
 SEPARACION_TABLAS_CM = 10
+# Valor objetivo de tabla. Si la medida visible no es múltiplo de 10,
+# la tabla real se ajusta lo más cerca posible a 10 cm para empezar y terminar en tabla.
 # Taller actual: cabezal/superior 16 cm + ruedo/inferior 5 cm = altura de corte +21 cm por defecto.
 
 APERTURAS = ["Central", "Derecha", "Izquierda", "Lateral"]
@@ -211,13 +214,38 @@ def hay_solapa_real(apertura, hay_cruce):
 
 
 def tablas_y_picos(medida_visible_m):
-    tablas = round((medida_visible_m * 100) / SEPARACION_TABLAS_CM)
+    """
+    Calcula tablas y picos para que el paño empiece y termine en tabla.
+
+    Regla aprobada por taller:
+    - La tabla objetivo es 10 cm.
+    - Si la medida visible no es múltiplo exacto de 10, se usa techo(medida_visible_cm / 10).
+    - Luego la tabla real se ajusta apenas por debajo/cerca de 10 cm.
+    - Picos = tablas - 1.
+
+    Ejemplo: 205 cm visibles -> 21 tablas de 9.76 cm y 20 picos.
+    """
+    medida_visible_cm = max(float(medida_visible_m) * 100, 0.0)
+
+    if medida_visible_cm <= 0:
+        tablas = 2
+    else:
+        tablas = math.ceil((medida_visible_cm - 1e-9) / SEPARACION_TABLAS_CM)
 
     if tablas < 2:
         tablas = 2
 
     picos = tablas - 1
     return tablas, picos
+
+
+def ancho_tabla_real_cm(medida_visible_m, tablas=None):
+    """Ancho real de cada tabla para cerrar exacto sobre la medida visible."""
+    if tablas is None:
+        tablas, _ = tablas_y_picos(medida_visible_m)
+    if tablas <= 0:
+        return 0.0
+    return (float(medida_visible_m) * 100) / tablas
 
 
 def estructura_panos_cortina(cortina, solapa_cm):
@@ -260,7 +288,8 @@ def estructura_panos_cortina(cortina, solapa_cm):
             "visible": visible_izq,
             "trabajo": visible_izq + DOBLADILLO_TOTAL_M,
             "tablas": tablas_izq,
-            "picos": picos_izq
+            "picos": picos_izq,
+            "tabla_real_cm": ancho_tabla_real_cm(visible_izq, tablas_izq)
         })
 
         panos.append({
@@ -268,7 +297,8 @@ def estructura_panos_cortina(cortina, solapa_cm):
             "visible": visible_der,
             "trabajo": visible_der + DOBLADILLO_TOTAL_M,
             "tablas": tablas_der,
-            "picos": picos_der
+            "picos": picos_der,
+            "tabla_real_cm": ancho_tabla_real_cm(visible_der, tablas_der)
         })
 
     else:
@@ -280,7 +310,8 @@ def estructura_panos_cortina(cortina, solapa_cm):
             "visible": visible,
             "trabajo": visible + DOBLADILLO_TOTAL_M,
             "tablas": tablas,
-            "picos": picos
+            "picos": picos,
+            "tabla_real_cm": ancho_tabla_real_cm(visible, tablas)
         })
 
     return panos
@@ -389,6 +420,8 @@ def calcular_central(cortina, solapa_cm, metraje_asignado, pico_maestro_cm=None)
 
     tablas_izq, picos_izq = tablas_y_picos(visible_izq)
     tablas_der, picos_der = tablas_y_picos(visible_der)
+    tabla_real_izq_cm = ancho_tabla_real_cm(visible_izq, tablas_izq)
+    tabla_real_der_cm = ancho_tabla_real_cm(visible_der, tablas_der)
 
     if pico_maestro_cm is not None:
         pico_izq = pico_maestro_cm
@@ -398,20 +431,24 @@ def calcular_central(cortina, solapa_cm, metraje_asignado, pico_maestro_cm=None)
         total_corte_calculado = corte_izq + corte_der
         fruncido_real = total_corte_calculado / base_total if base_total > 0 else 0
     else:
-        if base_total <= 0:
+        # Regla aprobada: en cortina central se usa un único pico común
+        # para ambos paños. El metraje total se reparte según la cantidad
+        # de picos de cada paño, no por fruncido proporcional separado.
+        total_picos = picos_izq + picos_der
+        if base_total <= 0 or total_picos <= 0:
             fruncido_real = 0
             corte_izq = 0
             corte_der = 0
+            pico_izq = 0
+            pico_der = 0
         else:
-            fruncido_real = metraje_asignado / base_total
-            corte_izq = trabajo_izq * fruncido_real
-            corte_der = trabajo_der * fruncido_real
-
-        excedente_izq = corte_izq - trabajo_izq
-        excedente_der = corte_der - trabajo_der
-
-        pico_izq = (excedente_izq * 100) / picos_izq if picos_izq > 0 else 0
-        pico_der = (excedente_der * 100) / picos_der if picos_der > 0 else 0
+            excedente_total_m = metraje_asignado - base_total
+            pico_comun_cm = (excedente_total_m * 100) / total_picos
+            pico_izq = pico_comun_cm
+            pico_der = pico_comun_cm
+            corte_izq = trabajo_izq + ((pico_comun_cm * picos_izq) / 100)
+            corte_der = trabajo_der + ((pico_comun_cm * picos_der) / 100)
+            fruncido_real = (corte_izq + corte_der) / base_total if base_total > 0 else 0
 
     return {
         "tipo": "Central",
@@ -435,6 +472,8 @@ def calcular_central(cortina, solapa_cm, metraje_asignado, pico_maestro_cm=None)
         "picos_der": picos_der,
         "total_tablas": tablas_izq + tablas_der,
         "total_picos": picos_izq + picos_der,
+        "tabla_real_izq_cm": tabla_real_izq_cm,
+        "tabla_real_der_cm": tabla_real_der_cm,
         "separacion_cm": SEPARACION_TABLAS_CM,
         "pico_izq": pico_izq,
         "pico_der": pico_der
@@ -449,6 +488,7 @@ def calcular_un_pano(cortina, metraje_asignado, pico_maestro_cm=None):
     trabajo = visible + DOBLADILLO_TOTAL_M
 
     tablas, picos = tablas_y_picos(visible)
+    tabla_real_cm = ancho_tabla_real_cm(visible, tablas)
 
     if pico_maestro_cm is not None:
         pico = pico_maestro_cm
@@ -472,6 +512,7 @@ def calcular_un_pano(cortina, metraje_asignado, pico_maestro_cm=None):
         "fruncido_real": fruncido_real,
         "tablas": tablas,
         "picos": picos,
+        "tabla_real_cm": tabla_real_cm,
         "separacion_cm": SEPARACION_TABLAS_CM,
         "pico": pico
     }
@@ -616,13 +657,13 @@ def panel_un_pano(res):
         <div class="costurero-detalle">
             <b>📌 Datos indispensables:</b><br>
             Ancho técnico con dobladillos: <b>{res['trabajo']:.2f} m</b><br>
-            Separación tabla a tabla: <b>{res['separacion_cm']} cm</b><br>
+            Tabla real aproximada: <b>{res.get('tabla_real_cm', res['separacion_cm']):.2f} cm</b><br>
             Profundidad de cada pico / pinza: <b>{res['pico']:.2f} cm</b><br>
             Fruncido real: <b>{res['fruncido_real']:.2f}</b>
         </div>
 
         <div class="costurero-alerta">
-            ⚠️ El dobladillo NO suma tablas. La primera y última tabla ya lo absorben.
+            ⚠️ La tabla se ajusta cerca de 10 cm para empezar y terminar en tabla.
         </div>
     </div>
     """
@@ -662,13 +703,13 @@ def panel_pano(nombre, corte, visible, tecnico, tablas, picos, separacion, pico,
         <div class="costurero-detalle">
             <b>📌 Datos indispensables:</b><br>
             Ancho técnico con dobladillos: <b>{tecnico:.2f} m</b><br>
-            Separación tabla a tabla: <b>{separacion} cm</b><br>
+            Tabla real aproximada: <b>{float(separacion):.2f} cm</b><br>
             Profundidad de cada pico / pinza: <b>{pico:.2f} cm</b><br>
             Fruncido real: <b>{fruncido:.2f}</b>
         </div>
 
         <div class="costurero-alerta">
-            ⚠️ No agregar tablas por dobladillo. La solapa cuenta solo si hay cruce.
+            ⚠️ La tabla se ajusta cerca de 10 cm para cerrar exacto. La solapa cuenta solo si hay cruce.
         </div>
     </div>
     """
@@ -703,10 +744,10 @@ def bloque_reglas_costurero(cortina):
     st.markdown(f"""
     <div class="important-box">
         🧵 REGLAS PARA NO COMETER ERRORES<br><br>
-        1. La separación de tablas es fija: <b>{SEPARACION_TABLAS_CM} cm</b>.<br>
+        1. La tabla objetivo es <b>{SEPARACION_TABLAS_CM} cm</b>, pero puede ajustarse apenas para cerrar exacto.<br>
         2. La cortina debe empezar en tabla y terminar en tabla.<br>
-        3. El dobladillo lateral de {DOBLADILLO_LATERAL_CM} cm por lado NO agrega tablas.<br>
-        4. La primera y la última tabla ya incluyen el dobladillo.<br>
+        3. Si la medida visible no es múltiplo de 10, se calcula una tabla real cercana a 10 cm.<br>
+        4. El dobladillo lateral de {DOBLADILLO_LATERAL_CM} cm por lado NO agrega tablas.<br>
         5. La solapa NO depende de si el trabajo es vertical o apaisado.<br>
         6. La solapa depende únicamente de si hay cruce entre paños.<br><br>
         <b>Tipo de trabajo:</b> {tipo_trabajo}<br>
@@ -768,8 +809,9 @@ def mostrar_hoja_cortina(cortina, tela, fruncido_uniforme):
         <div class="ok-box">
             ✅ RESUMEN CENTRAL<br>
             Total tablas: <b>{res['total_tablas']}</b> |
-            Total picos / pinzas: <b>{res['total_picos']}</b> |
-            Separación fija: <b>{res['separacion_cm']} cm</b><br>
+            Total picos / pinzas: <b>{res['total_picos']}</b><br>
+            Tabla real izq.: <b>{res['tabla_real_izq_cm']:.2f} cm</b> |
+            Tabla real der.: <b>{res['tabla_real_der_cm']:.2f} cm</b><br>
             Paño con solapa: <b>{res['pano_solapa'] if res['hay_cruce'] else 'No corresponde'}</b>
         </div>
         """, unsafe_allow_html=True)
@@ -790,7 +832,7 @@ def mostrar_hoja_cortina(cortina, tela, fruncido_uniforme):
                 res["trabajo_izq"],
                 res["tablas_izq"],
                 res["picos_izq"],
-                res["separacion_cm"],
+                res["tabla_real_izq_cm"],
                 res["pico_izq"],
                 res["fruncido_real"],
                 lleva_solapa
@@ -810,7 +852,7 @@ def mostrar_hoja_cortina(cortina, tela, fruncido_uniforme):
                 res["trabajo_der"],
                 res["tablas_der"],
                 res["picos_der"],
-                res["separacion_cm"],
+                res["tabla_real_der_cm"],
                 res["pico_der"],
                 res["fruncido_real"],
                 lleva_solapa
@@ -1060,11 +1102,14 @@ def bloque_datos_generales(cliente, telefono, fecha, tela, cortina):
     bloque_tarjetas("📋 Datos de cliente y cortina", tarjetas)
 
 
-def bloque_medidas_pano(nombre, corte, tecnico, visible, tablas, picos, profundidad_pico, lleva_solapa):
+def bloque_medidas_pano(nombre, corte, tecnico, visible, tablas, picos, profundidad_pico, lleva_solapa, tabla_real_cm=None):
+    if tabla_real_cm is None:
+        tabla_real_cm = ancho_tabla_real_cm(visible, tablas)
     tarjetas = [
         ("Corte", formato_m_cm(corte)),
         ("Ancho técnico", formato_m_cm(tecnico)),
         ("Medida visible", formato_m_cm(visible)),
+        ("Tabla real", f"{tabla_real_cm:.2f} cm"),
         ("Tablas", f"{tablas}"),
         ("Picos", f"{picos}"),
         ("Profundidad del pico", f"{profundidad_pico:.2f} cm"),
@@ -1073,7 +1118,10 @@ def bloque_medidas_pano(nombre, corte, tecnico, visible, tablas, picos, profundi
     bloque_tarjetas(f"📏 Medidas de trabajo - {nombre}", tarjetas, "taller-medidas-grid")
 
 
-def bloque_pasos_pano(nombre, corte, tecnico, visible, profundidad_pico):
+def bloque_pasos_pano(nombre, corte, tecnico, visible, profundidad_pico, tabla_real_cm=None):
+    if tabla_real_cm is None:
+        tablas_tmp, _ = tablas_y_picos(visible)
+        tabla_real_cm = ancho_tabla_real_cm(visible, tablas_tmp)
     # PASO 3 corregido:
     # Luego de cortar y hacer dobladillo de 4 cm por lado,
     # la medida de control de dobladillo a dobladillo es el corte total menos 8 cm.
@@ -1090,7 +1138,7 @@ def bloque_pasos_pano(nombre, corte, tecnico, visible, profundidad_pico):
         ),
         (
             "📐 PASO 4",
-            f"Entablar con tablas de {SEPARACION_TABLAS_CM} cm y picos de {profundidad_pico:.2f} cm de profundidad.",
+            f"Entablar con tablas de {tabla_real_cm:.2f} cm aprox. y picos de {profundidad_pico:.2f} cm de profundidad.",
             ""
         ),
         ("✅ PASO 5", f"Medir la cortina y verificar que posee {formato_m_cm(visible)} de medida visible.", ""),
@@ -1261,14 +1309,16 @@ def mostrar_bloque_taller():
                 res["tablas_izq"],
                 res["picos_izq"],
                 res["pico_izq"],
-                lleva_solapa
+                lleva_solapa,
+                res["tabla_real_izq_cm"]
             )
             bloque_pasos_pano(
                 "Paño izquierdo",
                 res["corte_izq"],
                 res["trabajo_izq"],
                 res["visible_izq"],
-                res["pico_izq"]
+                res["pico_izq"],
+                res["tabla_real_izq_cm"]
             )
 
         with tab_der:
@@ -1281,14 +1331,16 @@ def mostrar_bloque_taller():
                 res["tablas_der"],
                 res["picos_der"],
                 res["pico_der"],
-                lleva_solapa
+                lleva_solapa,
+                res["tabla_real_der_cm"]
             )
             bloque_pasos_pano(
                 "Paño derecho",
                 res["corte_der"],
                 res["trabajo_der"],
                 res["visible_der"],
-                res["pico_der"]
+                res["pico_der"],
+                res["tabla_real_der_cm"]
             )
 
     else:
@@ -1301,14 +1353,16 @@ def mostrar_bloque_taller():
             res["tablas"],
             res["picos"],
             res["pico"],
-            solapa_real_texto
+            solapa_real_texto,
+            res.get("tabla_real_cm")
         )
         bloque_pasos_pano(
             "Paño único",
             res["corte_total"],
             res["trabajo"],
             res["visible"],
-            res["pico"]
+            res["pico"],
+            res.get("tabla_real_cm")
         )
 
 
@@ -2493,6 +2547,8 @@ else:
         REGLA DE ORO:<br>
         La solapa no depende de si el trabajo es apaisado o vertical.<br>
         La solapa depende de si hay cruce entre paños.<br><br>
+        TABLAS:<br>
+        Si la medida visible no es múltiplo de 10 cm, la tabla se ajusta cerca de 10 cm para empezar y terminar en tabla.<br><br>
         ALTURA DE CORTE ACTUAL DEL TALLER:<br>
         Cabezal/superior <b>16 cm</b> + ruedo/inferior <b>5 cm</b> = <b>21 cm</b> sobre el alto terminado.
     </div>
