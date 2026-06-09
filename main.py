@@ -2964,3 +2964,42 @@ else:
         )
 
     st.caption("Sistema local/offline.")
+
+    # =====================================================
+    # MI ELECCIÓN PARA TU QUINCHO
+    # =====================================================
+
+    st.divider()
+    st.markdown("## 🏡 Mi elección para tu quincho")
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+        border: 2px solid #16a34a;
+        border-radius: 18px;
+        padding: 22px 26px;
+        margin-top: 10px;
+        box-shadow: 0 6px 18px rgba(22, 163, 74, 0.12);
+    ">
+        <div style="font-size: 22px; font-weight: 900; color: #14532d; margin-bottom: 10px;">
+            🪟 Corrediza Módena 2 hojas
+        </div>
+        <div style="font-size: 16px; color: #166534; font-weight: 700; margin-bottom: 14px; line-height: 1.6;">
+            ✅ DVH 4+9+4 &nbsp;|&nbsp; ✅ Aluminio anodizado &nbsp;|&nbsp; ✅ Protector bajo anti-rasguños
+        </div>
+        <a href="https://listado.mercadolibre.com.ar/ventanas-aluminio-modena-anodizado-dvh"
+           target="_blank"
+           style="
+               display: inline-block;
+               background: #16a34a;
+               color: white;
+               font-size: 17px;
+               font-weight: 900;
+               padding: 12px 28px;
+               border-radius: 12px;
+               text-decoration: none;
+               box-shadow: 0 4px 12px rgba(22, 163, 74, 0.3);
+           ">
+            🛒 Ver en Mercado Libre
+        </a>
+    </div>
+    """, unsafe_allow_html=True)
