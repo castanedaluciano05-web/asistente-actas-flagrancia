@@ -3015,15 +3015,15 @@ else:
             box-shadow: 0 6px 18px rgba(202, 138, 4, 0.12);
         ">
             <div style="font-size: 13px; font-weight: 900; color: #854d0e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">
-                💰 Más económica
+                💰 La más simple · Quincho
             </div>
             <div style="font-size: 20px; font-weight: 900; color: #713f12; margin-bottom: 10px;">
-                🚪 Puerta Ventana Corrediza
+                🚪 Puerta Ventana Corrediza 250x200
             </div>
             <div style="font-size: 15px; color: #854d0e; font-weight: 700; margin-bottom: 16px; line-height: 1.7;">
-                ✅ 240x200 cm (o 250x200)<br>✅ Con ruedas<br>✅ Vidrio simple · Aluminio
+                ✅ 250x200 cm · Aluminio<br>✅ Alto tránsito<br>✅ Doble rulimán<br>✅ Vidrio simple 4mm
             </div>
-            <a href="https://listado.mercadolibre.com.ar/puerta-ventana-aluminio-240x200"
+            <a href="https://listado.mercadolibre.com.ar/ventana-aluminio-250x200"
                target="_blank"
                style="
                    display: inline-block;
