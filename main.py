@@ -2964,3 +2964,81 @@ else:
         )
 
     st.caption("Sistema local/offline.")
+
+    # =====================================================
+    # MI ELECCIÓN PARA TU QUINCHO
+    # =====================================================
+
+    st.divider()
+    st.markdown("## 🏡 Mi elección para tu quincho")
+    st.markdown("""
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 10px;">
+
+        <div style="
+            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+            border: 2px solid #16a34a;
+            border-radius: 18px;
+            padding: 22px 26px;
+            box-shadow: 0 6px 18px rgba(22, 163, 74, 0.12);
+        ">
+            <div style="font-size: 13px; font-weight: 900; color: #166534; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">
+                ⭐ Premium
+            </div>
+            <div style="font-size: 20px; font-weight: 900; color: #14532d; margin-bottom: 10px;">
+                🪟 Corrediza Módena 2 hojas
+            </div>
+            <div style="font-size: 15px; color: #166534; font-weight: 700; margin-bottom: 16px; line-height: 1.7;">
+                ✅ DVH 4+9+4<br>✅ Aluminio anodizado<br>✅ Protector bajo anti-rasguños
+            </div>
+            <a href="https://listado.mercadolibre.com.ar/ventanas-aluminio-modena-anodizado-dvh"
+               target="_blank"
+               style="
+                   display: inline-block;
+                   background: #16a34a;
+                   color: white;
+                   font-size: 16px;
+                   font-weight: 900;
+                   padding: 11px 24px;
+                   border-radius: 12px;
+                   text-decoration: none;
+                   box-shadow: 0 4px 12px rgba(22, 163, 74, 0.3);
+               ">
+                🛒 Ver en Mercado Libre
+            </a>
+        </div>
+
+        <div style="
+            background: linear-gradient(135deg, #fffbeb 0%, #fef9c3 100%);
+            border: 2px solid #ca8a04;
+            border-radius: 18px;
+            padding: 22px 26px;
+            box-shadow: 0 6px 18px rgba(202, 138, 4, 0.12);
+        ">
+            <div style="font-size: 13px; font-weight: 900; color: #854d0e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">
+                💰 La más simple · Quincho
+            </div>
+            <div style="font-size: 20px; font-weight: 900; color: #713f12; margin-bottom: 10px;">
+                🚪 Puerta Ventana Corrediza 250x200
+            </div>
+            <div style="font-size: 15px; color: #854d0e; font-weight: 700; margin-bottom: 16px; line-height: 1.7;">
+                ✅ 250x200 cm · Aluminio<br>✅ Alto tránsito<br>✅ Doble rulimán<br>✅ Vidrio simple 4mm
+            </div>
+            <a href="https://listado.mercadolibre.com.ar/ventana-aluminio-250x200"
+               target="_blank"
+               style="
+                   display: inline-block;
+                   background: #ca8a04;
+                   color: white;
+                   font-size: 16px;
+                   font-weight: 900;
+                   padding: 11px 24px;
+                   border-radius: 12px;
+                   text-decoration: none;
+                   box-shadow: 0 4px 12px rgba(202, 138, 4, 0.3);
+               ">
+                🛒 Ver en Mercado Libre
+            </a>
+        </div>
+
+    </div>
+    """, unsafe_allow_html=True)
